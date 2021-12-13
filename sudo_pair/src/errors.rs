@@ -12,74 +12,35 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-use std::error::Error as StdError;
-use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::result::Result as StdResult;
-
-use failure::Context;
+use thiserror::Error;
 
 use sudo_plugin::prelude::{Error as PluginError, LogStatus, OpenStatus};
 
 pub(crate) type Result<T> = StdResult<T, Error>;
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub(crate) enum ErrorKind {
-    CommunicationError,
+// PluginError is larger than io::Error, but this shouldn't be a
+// problem for this error enum.
+#[allow(variant_size_differences)]
+#[derive(Debug, Error)]
+pub(crate) enum Error {
+    #[error("couldn't establish communications with the pair")]
+    Communication(#[from] std::io::Error),
+
+    #[error("pair declined the session")]
     SessionDeclined,
+
+    #[error("pair ended the session")]
     SessionTerminated,
+
+    #[error("redirection of stdin to paired sessions is prohibited")]
     StdinRedirected,
+
+    #[error("the -u and -g options may not both be specified")]
     SudoToUserAndGroup,
 
-    PluginError(PluginError),
-}
-
-impl ErrorKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ErrorKind::CommunicationError => {
-                "couldn't establish communications with the pair"
-            }
-            ErrorKind::SessionDeclined => "pair declined the session",
-            ErrorKind::SessionTerminated => "pair ended the session",
-            ErrorKind::StdinRedirected => {
-                "redirection of stdin to paired sessions is prohibited"
-            }
-            ErrorKind::SudoToUserAndGroup => {
-                "the -u and -g options may not both be specified"
-            }
-
-            ErrorKind::PluginError(_) => "the plugin failed to initialize",
-        }
-    }
-}
-
-impl Display for ErrorKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        self.clone().as_str().fmt(f)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Error {
-    inner: Context<ErrorKind>,
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        self.inner.fmt(f)
-    }
-}
-
-impl From<ErrorKind> for Error {
-    fn from(kind: ErrorKind) -> Self {
-        Self::from(Context::new(kind))
-    }
-}
-
-impl From<Context<ErrorKind>> for Error {
-    fn from(inner: Context<ErrorKind>) -> Self {
-        Self { inner }
-    }
+    #[error("the plugin failed to initialize")]
+    Plugin(#[from] PluginError),
 }
 
 impl From<Error> for OpenStatus {
@@ -93,11 +54,3 @@ impl From<Error> for LogStatus {
         LogStatus::Deny
     }
 }
-
-impl From<PluginError> for Error {
-    fn from(err: PluginError) -> Self {
-        ErrorKind::PluginError(err).into()
-    }
-}
-
-impl StdError for Error {}

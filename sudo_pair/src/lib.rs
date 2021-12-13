@@ -63,20 +63,18 @@ mod errors;
 mod socket;
 mod template;
 
-use crate::errors::{Error, ErrorKind, Result};
+use crate::errors::{Error, Result};
 use crate::socket::Socket;
 use crate::template::Spec;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use libc::{gid_t, mode_t, uid_t};
-
-use failure::ResultExt;
 
 use sudo_plugin::options::OptionMap;
 use sudo_plugin::prelude::*;
@@ -160,7 +158,7 @@ impl IoPlugin for SudoPair {
                 "group" => &pair.env.settings.runas_group,
             ));
 
-            return Err(ErrorKind::SudoToUserAndGroup.into());
+            return Err(Error::SudoToUserAndGroup);
         }
 
         let template_spec = pair.template_spec();
@@ -226,7 +224,7 @@ impl IoPlugin for SudoPair {
             return Ok(());
         }
 
-        Err(ErrorKind::StdinRedirected.into())
+        Err(Error::StdinRedirected)
     }
 
     fn change_winsize(&self, lines: u64, cols: u64) -> Result<()> {
@@ -240,7 +238,7 @@ impl SudoPair {
         self.socket
             .as_ref()
             .map_or(Ok(()), |socket| socket.borrow_mut().write_all(log))
-            .context(ErrorKind::SessionTerminated)?;
+            .map_err(|_| Error::SessionTerminated)?;
 
         slog::trace!(self.slog, "{{{} bytes sent}}", log.len());
 
@@ -325,17 +323,13 @@ impl SudoPair {
 
         slog::info!(slog, "socket waiting for pair to connect...");
 
-        // TODO: clearly indicate when the socket path is missing
-        // this is currently being hidden by the `context` method which
-        // ironically hides the extra context instead of providing extra
-        // context
+        // TODO: clearly indicate when the socket path is missing.
         let socket = Socket::open(
             self.socket_path(),
             self.socket_uid(),
             self.socket_gid(),
             self.socket_mode(),
-        )
-        .context(ErrorKind::CommunicationError)?;
+        )?;
 
         self.socket = Some(RefCell::new(socket));
 
@@ -360,14 +354,17 @@ impl SudoPair {
         let mut socket = self
             .socket
             .as_ref()
-            .ok_or(ErrorKind::CommunicationError)?
+            .ok_or_else(|| {
+                Error::Communication(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "socket not initialized",
+                ))
+            })?
             .borrow_mut();
 
-        socket
-            .write_all(&prompt[..])
-            .context(ErrorKind::CommunicationError)?;
+        socket.write_all(&prompt[..])?;
 
-        socket.flush().context(ErrorKind::CommunicationError)?;
+        socket.flush()?;
 
         slog::trace!(self.slog, "remote prompt rendered");
 
@@ -386,7 +383,7 @@ impl SudoPair {
         // have read at least one byte
         let _ = socket
             .read(&mut response)
-            .context(ErrorKind::SessionDeclined)?;
+            .map_err(|_| Error::SessionDeclined)?;
 
         slog::debug!(self.slog, "remote pair responded";
             "response" => String::from_utf8_lossy(&response[..]).into_owned(),
@@ -401,7 +398,7 @@ impl SudoPair {
             b"y" | b"Y" => (),
             _ => {
                 slog::warn!(self.slog, "remote pair declined session");
-                return Err(ErrorKind::SessionDeclined.into());
+                return Err(Error::SessionDeclined);
             }
         };
 
